@@ -1,6 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: canary-marker
-data:
-  purpose: temporary test that the dev-workloads ApplicationSet picks up a new directory
