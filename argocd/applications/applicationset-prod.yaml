@@ -1,0 +1,42 @@
+# Production counterpart of applicationset-dev.yaml, targeting the orbstack cluster.
+# Promoting a change to production means merging it into main, since both
+# ApplicationSets follow GIT_BRANCH (main) here.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: prod-workloads
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    - git:
+        repoURL: https://github.com/fakabbir/k8s-bootstrap.git
+        revision: main
+        directories:
+          - path: apps/overlays/prod/*
+  template:
+    metadata:
+      name: 'prod-{{.path.basename}}'
+    spec:
+      project: prod
+      source:
+        repoURL: https://github.com/fakabbir/k8s-bootstrap.git
+        targetRevision: main
+        path: '{{.path.path}}'
+      destination:
+        name: orbstack-prod
+        namespace: demo
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: "2"
+            maxDuration: 3m

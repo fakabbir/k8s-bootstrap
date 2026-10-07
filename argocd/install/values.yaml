@@ -1,0 +1,21 @@
+# Values for the argo-cd Helm chart, installed on the deployer cluster.
+# Chart: argo/argo-cd 10.9.6 (Argo CD v3.5.3). Version is pinned by build.sh.
+
+server:
+  service:
+    # Reached with `kubectl port-forward`, so no LoadBalancer/Ingress needed.
+    type: ClusterIP
+
+configs:
+  params:
+    # Serve plain HTTP from the API pod. port-forward then gives http://localhost:8080
+    # with no self-signed-certificate warnings in the browser.
+    server.insecure: true
+
+# Dex fronts SSO; local admin login is enough here and it saves a container.
+dex:
+  enabled: false
+
+# Not used yet; disable so the control plane stays a four-deployment footprint.
+notifications:
+  enabled: false

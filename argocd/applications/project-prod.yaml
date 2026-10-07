@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: prod
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+spec:
+  description: Workloads promoted to the production cluster (orbstack)
+  sourceRepos:
+    - https://github.com/fakabbir/k8s-bootstrap.git
+  destinations:
+    - name: orbstack-prod
+      namespace: '*'
+  clusterResourceWhitelist:
+    - group: ''
+      resources:
+        - Namespace
+  namespaceResourceWhitelist:
+    - group: ''
+      resources:
+        - '*'
+  orphanizeResources: false

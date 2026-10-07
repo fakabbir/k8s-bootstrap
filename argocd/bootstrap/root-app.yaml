@@ -1,0 +1,33 @@
+# The single entry point Argo CD reconciles for its own configuration: an
+# "app-of-apps" that owns everything under argocd/applications.
+# build.sh applies this one Application; every change below it is picked up
+# from GitHub automatically after the next sync.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-root
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+spec:
+  project: argocd-system
+  source:
+    repoURL: https://github.com/fakabbir/k8s-bootstrap.git
+    targetRevision: main
+    path: argocd/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 20
+      backoff:
+        duration: 15s
+        factor: "2"
+        maxDuration: 5m

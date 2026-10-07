@@ -1,0 +1,53 @@
+# Applied by build.sh into every member cluster (dev + orbstack), never into the
+# deployer cluster. Argo CD talks to those APIs with this ServiceAccount's token,
+# which is what lets it act without any kubeconfig being copied around.
+#
+# Names must stay in sync with ARGOCD_MANAGER_SA / ARGOCD_MANAGER_NS in
+# config/bootstrap.env, which build.sh reads the token from.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/part-of: argocd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-manager
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+---
+# Argo CD's application-controller needs cluster-wide read/write to sync
+# cluster-scoped objects and to watch every namespace the apps live in.
+# Narrow this by binding a custom ClusterRole instead of cluster-admin.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-manager
+  labels:
+    app.kubernetes.io/part-of: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: argocd-manager
+    namespace: argocd
+---
+# A Secret of this type gets a non-expiring service account token written into it
+# by the cluster's token controller. `kubectl create token` would expire after 1
+# year (or sooner, per provider) and require re-running the bootstrap.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: argocd-manager-token
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+  annotations:
+    kubernetes.io/service-account.name: argocd-manager
+type: kubernetes.io/service-account-token

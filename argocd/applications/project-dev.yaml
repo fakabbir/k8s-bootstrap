@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dev
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+spec:
+  description: Workloads promoted to the development cluster (kind-dev)
+  sourceRepos:
+    - https://github.com/fakabbir/k8s-bootstrap.git
+  # Destinations use the cluster's symbolic name, so a kind recreation that
+  # changes the API IP does not require editing this file.
+  destinations:
+    - name: dev-cluster
+      namespace: '*'
+  # apps/base commits its Namespace, so Argo CD needs permission to create it.
+  clusterResourceWhitelist:
+    - group: ''
+      resources:
+        - Namespace
+  namespaceResourceWhitelist:
+    - group: ''
+      resources:
+        - '*'
+  orphanizeResources: false

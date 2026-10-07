@@ -1,0 +1,26 @@
+# Argo CD's own bootstrap project. Applied by build.sh before the root app,
+# because an Application cannot be admitted into a project that does not exist yet.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: argocd-system
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+spec:
+  description: Manages Argo CD configuration (projects and ApplicationSets) on the deployer cluster
+  sourceRepos:
+    - https://github.com/fakabbir/k8s-bootstrap.git
+  destinations:
+    # In-cluster only: the deployer cluster running Argo CD itself.
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+  # argocd-root creates AppProjects and ApplicationSets, which are namespaced
+  # resources in Argo CD, plus whatever those generate.
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      resources:
+        - AppProject
+        - ApplicationSet
+        - Application
+  clusterResourceWhitelist: []

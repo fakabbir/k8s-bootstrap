@@ -1,0 +1,8 @@
+# Written by build.sh. Contains a cluster-admin bearer token per member cluster.
+.work/
+
+# The generated cluster records are secrets; keep them out of the repo even if
+# someone renames the output directory.
+cluster-*.json
+
+.DS_Store

@@ -1,0 +1,42 @@
+# One Application per directory under apps/overlays/dev.
+# Adding apps/overlays/dev/<name>/ and pushing is all it takes to ship a new
+# workload to the development cluster; no Argo CD manifest edit is needed.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: dev-workloads
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    - git:
+        repoURL: https://github.com/fakabbir/k8s-bootstrap.git
+        revision: main
+        directories:
+          - path: apps/overlays/dev/*
+  template:
+    metadata:
+      name: 'dev-{{.path.basename}}'
+    spec:
+      project: dev
+      source:
+        repoURL: https://github.com/fakabbir/k8s-bootstrap.git
+        targetRevision: main
+        path: '{{.path.path}}'
+      destination:
+        name: dev-cluster
+        namespace: demo
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: "2"
+            maxDuration: 3m
