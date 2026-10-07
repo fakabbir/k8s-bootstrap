@@ -1,0 +1,22 @@
+# kind config for the Argo CD control plane cluster.
+#
+# WHY THIS FILE EXISTS
+# Every kind cluster joins the same "kind" docker bridge and, by default, claims
+# the same pod CIDR 10.244.0.0/24. Two clusters on one bridge then allocate
+# duplicate pod IPs (two coredns replicas at 10.244.0.3, for example), and
+# in-cluster DNS becomes nondeterministic: Argo CD's repo-server CrashLoops
+# because it cannot reliably resolve argocd-redis.
+#
+# Fix is a unique pod/service CIDR per cluster, which is what these two lines do.
+# The docker network is deliberately left shared: Argo CD reaches the member
+# clusters at their node IPs, and that only works while they are on one bridge.
+#
+# kind-dev keeps 10.244.x; if you recreate it too, give it another free range.
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+name: deployer
+networking:
+  podSubnet: 10.245.0.0/16
+  serviceSubnet: 10.97.0.0/16
+nodes:
+  - role: control-plane

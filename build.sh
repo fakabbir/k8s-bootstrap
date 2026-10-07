@@ -98,6 +98,30 @@ start_probe_pod() {
     die "Probe pod $PROBE_POD never became ready. If $ARGOCD_CONTEXT has no internet access for image
      pulls, set PROBE_IMAGE in config/bootstrap.env to an image already present on the nodes."
   ok "probe pod ready ($PROBE_POD)"
+
+  # Argo CD is built entirely out of service DNS names, so a cluster whose DNS does
+  # not resolve produces CrashLoops three steps from here. Fail now, with the cause.
+  # A single lost reply is not a misconfiguration, so allow three attempts.
+  local attempt dns=""
+  for attempt in 1 2 3; do
+    dns=$(kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" exec "$PROBE_POD" -- \
+      sh -c "curl -sS -o /dev/null -w '%{exitcode}' --max-time 6 http://kubernetes.default.svc.cluster.local/" 2>/dev/null) || dns=$?
+    [[ $dns == 0 ]] && break
+    info "DNS attempt $attempt failed (curl exit $dns)"
+    sleep 3
+  done
+  if [[ $dns != 0 ]]; then
+    die "In-cluster DNS on $ARGOCD_CONTEXT cannot resolve service names (curl exit $dns), so Argo CD
+     would not reach its own repo-server. Two causes are known on laptop clusters:
+       1. NetworkPolicy. The Argo CD chart defaults global.networkPolicy.create to true, and
+          kindnet drops the DNS *replies* back to a policy-isolated pod. argocd/install/values.yaml
+          turns that off; re-enable it only with ingress allowed from kube-system on port 53.
+       2. Overlapping pod CIDRs. kind gives every cluster 10.244.0.0/16 while all clusters share
+          one docker bridge, so two coredns replicas can own the same pod IP.
+          clusters/kind/deployer.yaml gives this cluster its own range.
+     Look for policies with: kubectl --context $ARGOCD_CONTEXT get networkpolicy -A"
+  fi
+  ok "in-cluster DNS resolves service names"
 }
 
 probe_pod_ready() {
@@ -112,22 +136,33 @@ probe_write() {
 }
 
 # probe_url <cluster-name> <url> -> echoes Verified | Insecure | AuthRejected | Unreachable
+#
+# Classified on curl's exit code as well as the HTTP status. A node in the middle of
+# an image pull answers late, and treating that as a certificate problem would
+# silently register the cluster with tlsClientConfig.insecure. Each address gets two
+# attempts before it is written off.
 probe_url() {
-  local name=$1 url=$2 code
-  code=$(kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" exec "$PROBE_POD" -- \
-    sh -c "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 --cacert /tmp/${name}.ca.pem -H @/tmp/${name}.hdr '$url/version'" 2>/dev/null) || code=000
-  case "$code" in
-    200) echo Verified; return 0 ;;
-    401|403) echo AuthRejected; return 0 ;;
-  esac
-  # Certificate or hostname validation failed: repeat without verification to tell a
-  # bad certificate apart from a dead address.
-  code=$(kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" exec "$PROBE_POD" -- \
-    sh -c "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 -k '$url/version'" 2>/dev/null) || code=000
-  case "$code" in
-    200|401|403) echo Insecure ;;
-    *) echo Unreachable ;;
-  esac
+  local name=$1 url=$2 attempt http exit
+  for attempt in 1 2; do
+    read -r http exit < <(kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" exec "$PROBE_POD" -- \
+      sh -c "curl -sS -o /dev/null -w '%{http_code} %{exitcode}' --max-time 12 --cacert /tmp/${name}.ca.pem -H @/tmp/${name}.hdr '$url/version'" 2>/dev/null)
+    case "${exit:-failed}" in
+      0)
+        case $http in
+          200) echo Verified; return 0 ;;
+          401|403) echo AuthRejected; return 0 ;;
+        esac ;;
+      60|35|51|77)
+        # Certificate or hostname verification failed. Confirm the address itself
+        # answers with verification off before calling it insecure-only.
+        read -r http exit < <(kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" exec "$PROBE_POD" -- \
+          sh -c "curl -sS -o /dev/null -w '%{http_code} %{exitcode}' --max-time 12 -k '$url/version'" 2>/dev/null)
+        [[ ${exit:-failed} == 0 ]] && { echo Insecure; return 0; } ;;
+    esac
+    info "$url attempt $attempt inconclusive (http=${http:-none} curl_exit=${exit:-none})"
+    sleep 3
+  done
+  echo Unreachable
 }
 
 # --- member cluster registration ---------------------------------------------
@@ -238,21 +273,40 @@ render_cluster_secret() {
 install_argocd() {
   step "Installing Argo CD on $ARGOCD_CONTEXT"
   info "chart $ARGOCD_CHART version $ARGOCD_CHART_VERSION, values argocd/install/values.yaml"
+  # Deliberately without --wait. On a freshly created kind cluster every Argo CD
+  # image still has to be pulled, and helm would sit silent until --timeout fires.
+  # The readiness gate is the per-component rollout loop below, which says what it
+  # is waiting for.
   helm upgrade --install "$ARGOCD_RELEASE" "$ARGOCD_CHART" \
     --version "$ARGOCD_CHART_VERSION" \
     --namespace "$ARGOCD_NAMESPACE" \
     --kube-context "$ARGOCD_CONTEXT" \
     --create-namespace \
     --values argocd/install/values.yaml \
-    --wait \
-    --timeout "${ROLLOUT_TIMEOUT}s"
+    --timeout "${INSTALL_TIMEOUT}s"
 
   kubectl --context "$ARGOCD_CONTEXT" wait \
-    --for condition=established --timeout=120s \
+    --for condition=established --timeout=180s \
     crd/applications.argoproj.io \
     crd/appprojects.argoproj.io \
     crd/applicationsets.argoproj.io >/dev/null
-  ok "Argo CD control plane deployed and CRDs established"
+  info "CRDs established"
+
+  local kind_name workload name
+  for kind_name in deploy sts; do
+    case $kind_name in
+      deploy) workload=(argocd-redis argocd-repo-server argocd-applicationset-controller argocd-server) ;;
+      sts)    workload=(argocd-application-controller) ;;
+    esac
+    for name in "${workload[@]}"; do
+      if ! kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" \
+           rollout status "$kind_name/$name" --timeout="${INSTALL_TIMEOUT}s" >/dev/null 2>&1; then
+        die "$kind_name/$name did not roll out within ${INSTALL_TIMEOUT}s.
+         kubectl --context $ARGOCD_CONTEXT -n $ARGOCD_NAMESPACE get pods -o wide"
+      fi
+      ok "$kind_name/$name ready"
+    done
+  done
 }
 
 apply_root() {
@@ -263,8 +317,8 @@ apply_root() {
     apply -f argocd/bootstrap/root-app.yaml >/dev/null
   ok "AppProject argocd-system and Application argocd-root applied"
 
-  poll "argocd-root to be Synced and Healthy" "$ROLLOUT_TIMEOUT" 10 root_ready ||
-    die "argocd-root did not reach Synced/Healthy:
+  wait_for_application argocd-root "$ROLLOUT_TIMEOUT" ||
+    die "argocd-root did not reach Synced/Healthy within ${ROLLOUT_TIMEOUT}s:
      kubectl --context $ARGOCD_CONTEXT -n $ARGOCD_NAMESPACE get application argocd-root -o yaml"
   ok "argocd-root is Synced and Healthy"
 
@@ -273,17 +327,37 @@ apply_root() {
      kubectl --context $ARGOCD_CONTEXT -n $ARGOCD_NAMESPACE get applicationsets"
   ok "Applications generated from apps/overlays"
 
-  poll "every Application to be Synced and Healthy" "$ROLLOUT_TIMEOUT" 10 apps_healthy || {
-    warn "some Applications are not Synced/Healthy yet; Argo CD is still retrying"
+  if wait_for_children "$ROLLOUT_TIMEOUT"; then
+    ok "every Application is Synced and Healthy"
+  else
+    warn "these Applications had not converged after ${ROLLOUT_TIMEOUT}s:"
     list_applications
-  }
+  fi
 }
 
-root_ready() {
-  local s
-  s=$(kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" \
-    get application argocd-root -o jsonpath='{.status.sync.status} {.status.health.status}' 2>/dev/null) || return 1
-  [[ $s == "Synced Healthy" ]]
+# Why an Application has not converged: which resources are still out of sync and
+# the condition Argo CD recorded. Prints nothing when it has.
+application_diagnostics() {
+  kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" \
+    get application "$1" -o json 2>/dev/null | jq -r '
+      [ (.status.resources // [] | map(select(.status != "Synced")) | map(.kind + "/" + .name)
+          | if length > 0 then "outOfSync: " + join(", ") else empty end),
+        ((.status.conditions // [])[0].message // ""
+          | if . == "" then empty else "condition: " + .[0:170] end) ] | join("  |  ")'
+}
+
+wait_for_application() {
+  local app=$1 timeout=$2 waited=0 state problem
+  while true; do
+    state=$(kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" \
+      get application "$app" -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null) || state=""
+    [[ $state == "Synced/Healthy" ]] && return 0
+    problem=$(application_diagnostics "$app")
+    info "$app ${state:-no-status-yet}${problem:+  ($problem)}"
+    waited=$((waited + 15))
+    (( waited >= timeout )) && return 1
+    sleep 15
+  done
 }
 
 # Applications other than the root app; empty when the ApplicationSets have not run yet.
@@ -294,13 +368,26 @@ child_applications() {
 
 apps_generated() { [[ -n "$(child_applications)" ]]; }
 
-apps_healthy() {
-  local line
-  apps_generated || return 1
-  while IFS= read -r line; do
-    [[ $line == *" Synced Healthy" ]] || return 1
-  done < <(child_applications)
-  return 0
+# Child Applications that are not yet Synced and Healthy, as "name status" pairs.
+unconverged_children() {
+  kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" \
+    get applications.argoproj.io -o json 2>/dev/null | jq -r '
+      [.items[] | select(.metadata.name != "argocd-root")
+       | select((.status.sync.status // "") != "Synced" or (.status.health.status // "") != "Healthy")
+       | .metadata.name + " " + (.status.sync.status // "?") + "/" + (.status.health.status // "?")]
+      | join(", ")'
+}
+
+wait_for_children() {
+  local timeout=$1 waited=0 out
+  while true; do
+    out=$(unconverged_children)
+    [[ -z $out ]] && return 0
+    info "waiting on: $out"
+    waited=$((waited + 15))
+    (( waited >= timeout )) && return 1
+    sleep 15
+  done
 }
 
 list_applications() {

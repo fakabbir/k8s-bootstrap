@@ -12,6 +12,18 @@ configs:
     # with no self-signed-certificate warnings in the browser.
     server.insecure: true
 
+global:
+  networkPolicy:
+    # The chart creates these by default, and each one restricts a component's
+    # ingress to just the metrics port. kindnet (kind's CNI) then drops the DNS
+    # responses coming back to those pods, because it treats a reply as unsolicited
+    # ingress instead of conntrack-established traffic. Argo CD consequently cannot
+    # resolve a single name: repo-server CrashLoops on its redis health check and
+    # every Application sticks at sync status Unknown with
+    # "lookup argocd-repo-server on 10.97.0.10:53: i/o timeout".
+    # Deleting the policies made resolution instant again.
+    create: false
+
 # Dex fronts SSO; local admin login is enough here and it saves a container.
 dex:
   enabled: false
