@@ -14,10 +14,10 @@ spec:
       namespace: '*'
   clusterResourceWhitelist:
     - group: ''
-      resources:
-        - Namespace
+      kind: Namespace
   namespaceResourceWhitelist:
     - group: ''
-      resources:
-        - '*'
+      kind: '*'
+    - group: apps
+      kind: '*'
   orphanizeResources: false

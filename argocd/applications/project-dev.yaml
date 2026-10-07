@@ -17,10 +17,11 @@ spec:
   # apps/base commits its Namespace, so Argo CD needs permission to create it.
   clusterResourceWhitelist:
     - group: ''
-      resources:
-        - Namespace
+      kind: Namespace
+  # Workloads are namespaced; add groups here as apps grow beyond core and apps.
   namespaceResourceWhitelist:
     - group: ''
-      resources:
-        - '*'
+      kind: '*'
+    - group: apps
+      kind: '*'
   orphanizeResources: false

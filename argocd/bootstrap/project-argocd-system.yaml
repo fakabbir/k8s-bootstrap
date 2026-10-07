@@ -15,12 +15,11 @@ spec:
     # In-cluster only: the deployer cluster running Argo CD itself.
     - server: https://kubernetes.default.svc
       namespace: argocd
-  # argocd-root creates AppProjects and ApplicationSets, which are namespaced
-  # resources in Argo CD, plus whatever those generate.
+  # argocd-root only creates the projects and ApplicationSets that live under
+  # argocd/applications, and those are namespaced resources.
   namespaceResourceWhitelist:
     - group: argoproj.io
-      resources:
-        - AppProject
-        - ApplicationSet
-        - Application
+      kind: AppProject
+    - group: argoproj.io
+      kind: ApplicationSet
   clusterResourceWhitelist: []
