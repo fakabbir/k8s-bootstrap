@@ -11,6 +11,9 @@ configs:
     # Serve plain HTTP from the API pod. port-forward then gives http://localhost:8080
     # with no self-signed-certificate warnings in the browser.
     server.insecure: true
+    # Argo CD's default is 3 minutes between Git polls, which makes the first
+    # "push and watch it deploy" feel broken. A laptop lab benefits from 60s.
+    timeout.reconciliation: 60s
 
 global:
   networkPolicy:

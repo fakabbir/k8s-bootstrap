@@ -420,9 +420,10 @@ preflight() {
 summary() {
   step "Result"
   printf '\n  Clusters known to Argo CD\n'
+  # stringData is write-only; the stored address has to be read back from data.
   kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" \
-    get secret -l argocd.argoproj.io/secret-type=cluster \
-    -o custom-columns='NAME:.metadata.name,SERVER:.stringData.server' --no-headers 2>/dev/null | sed 's/^/    /'
+    get secret -l argocd.argoproj.io/secret-type=cluster -o json 2>/dev/null |
+    jq -r '.items[] | "    " + .metadata.name + "  " + (.data.server | @base64d)'
 
   printf '\n  Applications (name / project / destination / sync / health)\n'
   kubectl --context "$ARGOCD_CONTEXT" -n "$ARGOCD_NAMESPACE" get applications.argoproj.io \
